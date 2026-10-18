@@ -118,3 +118,34 @@ test("setChapter 越界返回 false；单页章节进度为 0", () => {
   reader.setProgress(0.8);
   assert.equal(reader.snapshot().pageIndex, 2);
 });
+
+test("跨章按需加载：replaceChapter 更新当前章页数并支持继续翻页", () => {
+  const lazy: ReaderChapter[] = [
+    {
+      id: "l1",
+      title: "占位一",
+      pages: [{ id: "l1p1", kind: "placeholder", caption: "loading" }],
+    },
+    {
+      id: "l2",
+      title: "占位二",
+      pages: [{ id: "l2-loading", kind: "placeholder", caption: "loading" }],
+      lazy: true,
+    },
+  ];
+  const reader = new ReaderController(lazy, { chapterIndex: 1, pageIndex: 0 });
+  assert.equal(reader.snapshot().pageCount, 1);
+
+  assert.equal(reader.replaceChapter(1, {
+    id: "l2",
+    title: "已加载",
+    pages: [
+      { id: "l2p1", kind: "text", content: "a" },
+      { id: "l2p2", kind: "text", content: "b" },
+      { id: "l2p3", kind: "text", content: "c" },
+    ],
+  }), true);
+  assert.equal(reader.snapshot().pageCount, 3);
+  assert.equal(reader.nextPage(), "page");
+  assert.equal(reader.replaceChapter(9, { id: "x", title: "x", pages: [] }), false);
+});

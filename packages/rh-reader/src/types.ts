@@ -20,6 +20,8 @@ export interface ReaderChapter {
   id: string;
   title: string;
   pages: ReaderPage[];
+  /** 内容尚未加载（跨章按需加载）；阅读器进入该章时调用 `loadChapter`。 */
+  lazy?: boolean;
 }
 
 export interface ReaderSnapshot {

@@ -76,6 +76,17 @@ export class ReaderController {
     return true;
   }
 
+  /** 替换某一章的内容（跨章按需加载）；若替换的是当前章，页数与页码同步更新。 */
+  replaceChapter(index: number, chapter: ReaderChapter): boolean {
+    if (index < 0 || index >= this.chapters.length) return false;
+    this.chapters[index] = chapter;
+    if (index === this.state.chapterIndex) {
+      this.state.pageCount = chapter.pages.length;
+      this.state.pageIndex = clamp(this.state.pageIndex, 0, Math.max(0, this.state.pageCount - 1));
+    }
+    return true;
+  }
+
   /** 进度条 0~1 → 页索引（四舍五入）。 */
   setProgress(ratio: number): boolean {
     if (this.state.pageCount <= 1) return false;

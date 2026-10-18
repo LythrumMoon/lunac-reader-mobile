@@ -27,12 +27,16 @@ export interface ReaderLabels {
   tocTitle: string;
   close: string;
   progress: string;
+  loadingChapter: string;
+  chapterLoadFail: string;
 }
 
 export interface ReaderOptions {
   chapters: ReaderChapter[];
   initial?: ReaderInitialState;
   labels: ReaderLabels;
+  /** 跨章按需加载：lazy 章节进入视野时调用；返回 null 表示失败。 */
+  loadChapter?(chapterIndex: number): Promise<ReaderChapter | null>;
   onExit(): void;
   onProgress?(snapshot: ReaderSnapshot): void;
   onChapterChange?(chapterIndex: number, chapter: ReaderChapter): void;
@@ -176,6 +180,8 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
   let pointerStart: { x: number; y: number; time: number } | null = null;
 
   const snap = (): ReaderSnapshot => controller.snapshot();
+  const loading = new Map<number, Promise<boolean>>();
+  const initialPage = options.initial?.pageIndex ?? 0;
 
   function pageHtml(page: ReaderPage): string {
     if (page.kind === "image" && page.content) {
@@ -194,7 +200,8 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
   }
 
   function renderPage(): void {
-    pageEl.innerHTML = pageHtml(controller.currentPage);
+    const page = controller.currentPage;
+    pageEl.innerHTML = page ? pageHtml(page) : "";
     pageEl.classList.remove("rh-reader-page-in");
     void pageEl.offsetWidth;
     pageEl.classList.add("rh-reader-page-in");
@@ -237,6 +244,48 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
     options.onChapterChange?.(snap().chapterIndex, controller.currentChapter);
   }
 
+  /** 确保某一章已加载；同一章的并发请求复用同一个 Promise。 */
+  function ensureChapter(index: number): Promise<boolean> {
+    const chapter = options.chapters[index];
+    if (!chapter?.lazy || !options.loadChapter) return Promise.resolve(true);
+    const pending = loading.get(index);
+    if (pending) return pending;
+    const task = (async () => {
+      try {
+        const loaded = await options.loadChapter?.(index);
+        if (!loaded) return false;
+        controller.replaceChapter(index, loaded);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        loading.delete(index);
+      }
+    })();
+    loading.set(index, task);
+    return task;
+  }
+
+  /** 目录 / 下一章共用：切章后按需加载，再刷新界面。 */
+  async function selectChapter(index: number, page = 0): Promise<void> {
+    if (index < 0 || index >= options.chapters.length) return;
+    if (!controller.setChapter(index, page)) return;
+    if (tocOpen) {
+      tocOpen = false;
+      renderToc();
+    }
+    // 先渲染占位（或已缓存内容），再等待按需加载，避免切章时停在上一条内容。
+    renderPage();
+    renderBars();
+    const ok = await ensureChapter(index);
+    renderPage();
+    renderBars();
+    emitChapter();
+    emitProgress();
+    scheduleHide();
+    if (!ok) showToast(options.labels.chapterLoadFail);
+  }
+
   function showToast(message: string, duration = 1600): void {
     toastEl.textContent = message;
     toastEl.classList.add("is-visible");
@@ -267,12 +316,12 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
     scheduleHide();
   }
 
-  function syncAutoplay(): void {
-    if (autoplayTimer) window.clearInterval(autoplayTimer);
-    autoplayTimer = undefined;
-    if (!snap().autoplay) return;
-    const interval = Math.max(700, Math.round(4200 / snap().speed));
-    autoplayTimer = window.setInterval(() => {
+  let autoplayBusy = false;
+
+  async function autoplayStep(): Promise<void> {
+    if (autoplayBusy) return;
+    autoplayBusy = true;
+    try {
       const step = controller.nextPage();
       if (step === "end") {
         controller.setAutoplay(false);
@@ -281,15 +330,29 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
         syncAutoplay();
         return;
       }
-      if (step === "chapter") emitChapter();
+      if (step === "chapter") {
+        const ok = await ensureChapter(snap().chapterIndex);
+        if (!ok) showToast(options.labels.chapterLoadFail);
+        emitChapter();
+      }
       renderPage();
       renderBars();
       emitProgress();
       scheduleHide();
-    }, interval);
+    } finally {
+      autoplayBusy = false;
+    }
   }
 
-  function turnPage(direction: "prev" | "next"): void {
+  function syncAutoplay(): void {
+    if (autoplayTimer) window.clearInterval(autoplayTimer);
+    autoplayTimer = undefined;
+    if (!snap().autoplay) return;
+    const interval = Math.max(700, Math.round(4200 / snap().speed));
+    autoplayTimer = window.setInterval(() => void autoplayStep(), interval);
+  }
+
+  async function turnPage(direction: "prev" | "next"): Promise<void> {
     const step = direction === "next" ? controller.nextPage() : controller.prevPage();
     if (step === "end") {
       showToast(options.labels.lastPage);
@@ -299,7 +362,12 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
       showToast(options.labels.firstPage);
       return;
     }
-    if (step === "chapter") emitChapter();
+    if (step === "chapter") {
+      const ok = await ensureChapter(snap().chapterIndex);
+      if (ok && direction === "prev") controller.setPage(controller.pageCount - 1);
+      if (!ok) showToast(options.labels.chapterLoadFail);
+      emitChapter();
+    }
     renderPage();
     renderBars();
     emitProgress();
@@ -360,12 +428,12 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
       snap().mode,
     );
     if (snap().locked) {
-      if (zone === "prev") turnPage("prev");
-      if (zone === "next") turnPage("next");
+      if (zone === "prev") void turnPage("prev");
+      if (zone === "next") void turnPage("next");
       return;
     }
     if (zone === "toggle") toggleBars();
-    else turnPage(zone);
+    else void turnPage(zone);
   };
 
   const onPointerCancel = (): void => {
@@ -380,15 +448,7 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
     const tocItem = target?.closest<HTMLElement>("[data-toc]");
     if (tocItem) {
       const index = Number(tocItem.dataset.toc ?? "0");
-      if (controller.setChapter(index, 0)) {
-        tocOpen = false;
-        renderToc();
-        renderPage();
-        renderBars();
-        emitChapter();
-        emitProgress();
-        scheduleHide();
-      }
+      void selectChapter(index, 0);
       return;
     }
     const el = target?.closest<HTMLElement>("[data-action]");
@@ -431,15 +491,11 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
       }
       case "next-chapter": {
         const next = snap().chapterIndex + 1;
-        if (!controller.setChapter(next, 0)) {
+        if (next >= options.chapters.length) {
           showToast(options.labels.lastChapter);
           return;
         }
-        renderPage();
-        renderBars();
-        emitChapter();
-        emitProgress();
-        scheduleHide();
+        void selectChapter(next, 0);
         return;
       }
       case "crop": {
@@ -486,6 +542,21 @@ export function mountReader(root: HTMLElement, options: ReaderOptions): ReaderHa
   renderPage();
   renderBars();
   scheduleHide();
+
+  // 首章可能是 lazy 占位（直接以章节索引打开远程来源时）；进入后立即补载。
+  if (options.chapters[snap().chapterIndex]?.lazy) {
+    void ensureChapter(snap().chapterIndex).then((ok) => {
+      if (!ok) {
+        showToast(options.labels.chapterLoadFail);
+        return;
+      }
+      if (initialPage > 0) controller.setPage(initialPage);
+      renderPage();
+      renderBars();
+      emitChapter();
+      emitProgress();
+    });
+  }
 
   return {
     destroy(): void {
