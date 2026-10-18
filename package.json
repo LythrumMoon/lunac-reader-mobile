@@ -13,6 +13,7 @@
     "test": "npm run test -w @resource-hub/source-sdk && npm run test -w @resource-hub/reader"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
   }
 }
