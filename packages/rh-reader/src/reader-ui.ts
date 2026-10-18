@@ -77,8 +77,8 @@ function must<T>(value: T | null, name: string): T {
 
 const STYLE = `
 .rh-reader{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden;color:var(--text);background:var(--surface-glass);font:inherit}
-.rh-reader-stage{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:manipulation;user-select:none;-webkit-user-select:none}
-.rh-reader-page{position:absolute;inset:0;overflow-y:auto;padding:56px 32px 118px;box-sizing:border-box}
+.rh-reader-stage{position:relative;flex:1;min-height:0;overflow:hidden;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.rh-reader-page{position:absolute;inset:0;overflow-y:auto;overscroll-behavior:contain;padding:calc(56px + env(safe-area-inset-top)) calc(32px + env(safe-area-inset-right)) calc(118px + env(safe-area-inset-bottom)) calc(32px + env(safe-area-inset-left));box-sizing:border-box}
 .rh-reader-page-in{animation:rh-reader-page-in .18s ease-out}
 @keyframes rh-reader-page-in{from{opacity:.4;transform:translateY(4px)}to{opacity:1;transform:none}}
 .rh-reader[data-mode="paged"] .rh-reader-page-in{animation-name:rh-reader-page-in-x}
@@ -86,11 +86,13 @@ const STYLE = `
 .rh-reader-text{max-width:760px;margin:0 auto;line-height:1.9;font-size:1rem;color:var(--text-dim)}
 .rh-reader-text p{margin:0 0 1.1em;white-space:pre-wrap}
 .rh-reader-image{display:block;max-width:100%;margin:0 auto 12px;border-radius:6px}
+/* 大屏不裁图：分页 / 上下模式让整页图片落在可视区内；条漫保持连续长图 */
+.rh-reader:not([data-mode="webtoon"]) .rh-reader-image{width:auto;max-height:calc(100vh - 174px);max-height:calc(100dvh - 174px)}
 .rh-reader-placeholder{max-width:760px;margin:0 auto 12px;min-height:180px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border-glass);border-radius:8px;background:rgba(var(--ink-rgb),.04);color:var(--text-muted);font-size:.86rem}
 .rh-reader-bar{position:absolute;left:0;right:0;z-index:5;background:rgba(var(--surface-rgb,22,24,27),.9);border-color:var(--border-glass);transition:opacity .22s ease,transform .22s ease}
 .rh-reader-bar.is-hidden{opacity:0;pointer-events:none}
-.rh-reader-top{top:0;display:flex;align-items:center;gap:10px;padding:calc(8px + env(safe-area-inset-top)) 14px 8px;border-bottom:1px solid var(--border-glass)}
-.rh-reader-bottom{bottom:0;display:flex;flex-direction:column;gap:6px;padding:8px 14px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--border-glass)}
+.rh-reader-top{top:0;display:flex;align-items:center;gap:10px;padding:calc(8px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 8px calc(14px + env(safe-area-inset-left));border-bottom:1px solid var(--border-glass)}
+.rh-reader-bottom{bottom:0;display:flex;flex-direction:column;gap:6px;padding:8px calc(14px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));border-top:1px solid var(--border-glass)}
 .rh-reader-top.is-hidden{transform:translateY(-6px)}
 .rh-reader-bottom.is-hidden{transform:translateY(6px)}
 .rh-reader-title{flex:1;min-width:0;text-align:center;font-size:.88rem;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -114,10 +116,37 @@ const STYLE = `
 .rh-reader-toc-item.is-current{border-color:rgba(var(--accent-rgb),.36);background:rgba(var(--accent-rgb),.10);color:var(--text)}
 .rh-reader[data-crop="true"] .rh-reader-page{padding-left:6px;padding-right:6px}
 @media (max-width:640px){
-  .rh-reader-page{padding:52px 16px 128px}
+  .rh-reader-page{padding:calc(52px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(128px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}
   .rh-reader-btn{font-size:.76rem;padding:7px 6px;gap:4px}
-  .rh-reader-top,.rh-reader-bottom{padding-left:10px;padding-right:10px}
+  .rh-reader-top,.rh-reader-bottom{padding-left:calc(10px + env(safe-area-inset-left));padding-right:calc(10px + env(safe-area-inset-right))}
   .rh-reader-actions{gap:0}
+}
+/* iPad / 平板（竖屏 768+）：正文行宽收紧、字号上浮、控件留出触控尺寸 */
+@media (min-width:768px){
+  .rh-reader-page{padding:calc(64px + env(safe-area-inset-top)) calc(48px + env(safe-area-inset-right)) calc(132px + env(safe-area-inset-bottom)) calc(48px + env(safe-area-inset-left))}
+  .rh-reader-text{max-width:min(820px,74ch);font-size:1.08rem;line-height:2}
+  .rh-reader-placeholder{max-width:min(820px,74ch);min-height:220px}
+  .rh-reader-top,.rh-reader-bottom{padding-left:calc(24px + env(safe-area-inset-left));padding-right:calc(24px + env(safe-area-inset-right))}
+  .rh-reader-btn{font-size:.9rem;padding:9px 12px;gap:8px;min-height:40px}
+  .rh-reader-title{font-size:.95rem}
+  .rh-reader-actions{gap:6px}
+  .rh-reader-progress input[type="range"]{height:24px}
+  .rh-reader-toc-panel{width:min(420px,72%)}
+  .rh-reader-toc-item{font-size:.92rem;padding:11px 12px}
+  .rh-reader-toast{max-width:min(520px,72%);font-size:.92rem;padding:12px 18px}
+  .rh-reader:not([data-mode="webtoon"]) .rh-reader-image{max-height:calc(100vh - 196px);max-height:calc(100dvh - 196px)}
+}
+/* iPad 横屏 / Stage Manager：进一步放宽侧边留白，避免正文贴边 */
+@media (min-width:1024px) and (orientation:landscape){
+  .rh-reader-page{padding-left:calc(72px + env(safe-area-inset-left));padding-right:calc(72px + env(safe-area-inset-right))}
+  .rh-reader-text{max-width:min(900px,80ch)}
+  .rh-reader-placeholder{max-width:min(900px,80ch)}
+  .rh-reader-top,.rh-reader-bottom{padding-left:calc(40px + env(safe-area-inset-left));padding-right:calc(40px + env(safe-area-inset-right))}
+}
+/* 触屏（含 iPad 全系）：所有动作按钮至少 40px 高，进度条加厚便于拖动 */
+@media (pointer:coarse){
+  .rh-reader-btn{min-height:40px}
+  .rh-reader-progress input[type="range"]{height:26px}
 }
 `;
 
