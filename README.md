@@ -7,9 +7,9 @@
 本仓库先发布**共享内核**（纯 TypeScript、无宿主依赖）：
 
 ```
-packages/rh-source-sdk/   RSP v1 数据契约、声明式规则执行器、Kazumi 规则转换、
+packages/rh-source-sdk/   RSP v1 数据契约、声明式规则执行器、规则格式转换、
                           聚合仓库解析、带缓存 / 限速 / 取消 / 超时的网络客户端
-packages/rh-reader/       阅读控制器与上下框阅读器 UI
+packages/rh-reader/       阅读控制器与上下框阅读器 UI（含跨章按需加载）
 ```
 
 Tauri 2 移动端外壳（Android / iOS）尚未接入；接入后放在 `apps/mobile/`，直接复用上述包。
@@ -32,7 +32,7 @@ Tauri 2 移动端外壳（Android / iOS）尚未接入；接入后放在 `apps/m
 - 默认索引：`https://cdn.jsdelivr.net/gh/LythrumMoon/lunac-rules@main/index.json`
 - 备选索引：`https://raw.githubusercontent.com/LythrumMoon/lunac-rules/main/index.json`
 
-上游条目只登记地址，不复制规则正文；自建条目才允许内嵌 `source: { manifest, rule }`。
+索引条目只提供地址，不复制规则正文；自建条目才允许内嵌 `source: { manifest, rule }`。
 
 ## 开发
 
@@ -48,10 +48,9 @@ npm run typecheck
 ## 合规
 
 - 应用不内置任何第三方作品正文或盗版源；只提供协议、阅读器与用户自行导入的规则。
-- 演示来源仅使用 Gutendex / Project Gutenberg 的公版书目元数据与摘要。
-- 上游规则（Kazumi / Venera / uzVideo）的版权与许可以其原始仓库为准；本项目只做接口翻译与干净实现。
+- 演示来源仅使用公版书目元数据与摘要。
 - iOS 完整版只走自签名 / LiveContainer + SideStore，不提交 App Store。
 
 ## License
 
-MIT，见 [LICENSE](./LICENSE)。上游规则与第三方内容不适用本仓库的 MIT 许可。
+MIT，见 [LICENSE](./LICENSE)。第三方内容不适用本仓库的 MIT 许可。
