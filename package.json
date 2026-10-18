@@ -1,0 +1,18 @@
+{
+  "name": "lunac-reader-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @resource-hub/source-sdk && npm run build -w @resource-hub/reader",
+    "typecheck": "npm run typecheck -w @resource-hub/source-sdk && npm run typecheck -w @resource-hub/reader",
+    "test": "npm run test -w @resource-hub/source-sdk && npm run test -w @resource-hub/reader"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+dist-test/
+**/dist-test/
+src-tauri/target/
+src-tauri/gen/
+.vscode/
+.idea/
+*.log
+.DS_Store
