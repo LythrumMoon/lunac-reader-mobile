@@ -65,12 +65,19 @@ export interface EngineApi {
   eval(code: string, options?: { timeoutMs?: number; args?: unknown }): Promise<unknown>;
 }
 
+export interface SniffApi {
+  /** 隐藏 WebView 打开剧集页并拦截 m3u8 / mp4；移动端可自行实现或留空。 */
+  media(url: string, options?: { timeoutMs?: number }): Promise<string[]>;
+}
+
 export interface LunacHostV3 {
   apiVersion: number;
   net: NetApi;
   media: MediaApi;
   storage: StorageApi;
   engine: EngineApi;
+  /** v3 增补（2026-10-21）：宿主未升级时缺失，需要嗅探的来源要给出可读错误。 */
+  sniff?: SniffApi;
 }
 
 type HostScope = { __lunac_host?: Partial<LunacHostV3> };

@@ -1,7 +1,9 @@
 import {
+  READER_CROP_MODES,
   READER_MODES,
   READER_SPEEDS,
   type ReaderChapter,
+  type ReaderCropMode,
   type ReaderInitialState,
   type ReaderMode,
   type ReaderPage,
@@ -31,6 +33,12 @@ export class ReaderController {
     const speed = READER_SPEEDS.includes(initial.speed as (typeof READER_SPEEDS)[number])
       ? (initial.speed as number)
       : 1;
+    const cropMode: ReaderCropMode =
+      initial.cropMode === true
+        ? "margin"
+        : initial.cropMode && READER_CROP_MODES.includes(initial.cropMode)
+          ? initial.cropMode
+          : "off";
     this.state = {
       chapterIndex,
       pageIndex,
@@ -40,7 +48,7 @@ export class ReaderController {
       speed,
       locked: false,
       barsVisible: true,
-      cropMode: initial.cropMode === true,
+      cropMode,
       autoplay: false,
     };
   }
@@ -176,9 +184,11 @@ export class ReaderController {
     return next;
   }
 
-  toggleCrop(): boolean {
-    this.state.cropMode = !this.state.cropMode;
-    return this.state.cropMode;
+  toggleCrop(): ReaderCropMode {
+    const index = READER_CROP_MODES.indexOf(this.state.cropMode);
+    const next = READER_CROP_MODES[(index + 1) % READER_CROP_MODES.length];
+    this.state.cropMode = next;
+    return next;
   }
 }
 

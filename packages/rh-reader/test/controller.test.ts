@@ -40,6 +40,12 @@ test("初始状态：双框可见、垂直模式、速度 1x", () => {
   assert.equal(state.pageCount, 3);
 });
 
+test("裁剪初始值：布尔兼容，字符串模式原样保留", () => {
+  assert.equal(new ReaderController(chapters, { cropMode: true }).snapshot().cropMode, "margin");
+  assert.equal(new ReaderController(chapters, { cropMode: false }).snapshot().cropMode, "off");
+  assert.equal(new ReaderController(chapters, { cropMode: "split" }).snapshot().cropMode, "split");
+});
+
 test("点击分区：上下模式 35/30/35", () => {
   assert.equal(resolveTapZone(50, 10, 100, 100, "vertical"), "prev");
   assert.equal(resolveTapZone(50, 50, 100, 100, "vertical"), "toggle");
@@ -90,8 +96,10 @@ test("速度 / 模式 / 裁剪 / 自动播放循环", () => {
   assert.equal(reader.cycleMode(), READER_MODES[2]);
   assert.equal(reader.cycleMode(), READER_MODES[0]);
 
-  assert.equal(reader.toggleCrop(), true);
-  assert.equal(reader.toggleCrop(), false);
+  assert.equal(reader.toggleCrop(), "margin");
+  assert.equal(reader.toggleCrop(), "trim");
+  assert.equal(reader.toggleCrop(), "split");
+  assert.equal(reader.toggleCrop(), "off");
 
   assert.equal(reader.toggleAutoplay(), true);
   reader.setAutoplay(false);

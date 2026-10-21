@@ -12,11 +12,48 @@ import {
  *
  * **重要边界**：
  *  - 这里只记录**上游地址与元数据**，不复制上游的规则 / 脚本内容；
+ *    插件安装时再按 `sourceUrl` 读取（用户主动操作，正文只落在本机 ModuleData）。
  *  - `license` / `attribution` 必须保留，**不得**为了「看起来像自己的」而抹掉；
  *  - 聚合可以做的是：统一字段、去重、版本比较、补 warnings。
  */
 
-export type Upstream = "kazumi" | "venera" | "uzvideo" | "manual";
+export type Upstream = "manga" | "comic" | "video" | "manual";
+
+/**
+ * 旧版 id / upstream 迁移表。
+ *
+ * **只用于读取历史数据**：早期版本的 registry 与已装来源使用旧前缀，
+ * 这里把它们归一成新前缀；新 id 一律由 `from*Index` 生成，不再引用这张表。
+ */
+const LEGACY_ID_PREFIXES: [string, string][] = [
+  ["venera.", "comic."],
+  ["kazumi.", "manga."],
+  ["uzvideo.", "video."],
+];
+
+const LEGACY_UPSTREAM: Record<string, Upstream> = {
+  venera: "comic",
+  kazumi: "manga",
+  uzvideo: "video",
+};
+
+/** 把旧版来源 id 归一成新前缀；已经是新前缀的原样返回。 */
+export function normalizeLegacyId(id: string): string {
+  const value = id.trim();
+  for (const [old, next] of LEGACY_ID_PREFIXES) {
+    if (value.startsWith(old)) return `${next}${value.slice(old.length)}`;
+  }
+  return value;
+}
+
+/** 把旧版 upstream 归一成新值；未知值按 `manual` 处理。 */
+export function normalizeLegacyUpstream(value: string): Upstream {
+  const key = value.trim();
+  if (key in LEGACY_UPSTREAM) return LEGACY_UPSTREAM[key];
+  return key === "manga" || key === "comic" || key === "video" || key === "manual"
+    ? key
+    : "manual";
+}
 
 export interface RegistryEntry {
   /** 全局 id：`<upstream>.<slug>`，与 RSP 清单 id 同规则。 */
@@ -35,9 +72,9 @@ export interface RegistryEntry {
   attribution?: string;
   warnings: string[];
   /**
-   * 自建（`upstream: "manual"`）来源的内嵌规则，便于离线演示「导入 registry → 安装」。
-   * **只允许放本仓库自有的规则**；上游 Kazumi / Venera / uzVideo 仍然只登记 `sourceUrl`，
-   * 不得把它们的规则正文抄进来。
+   * 自建（`upstream: "manual"`）来源的内嵌规则，便于离线安装。
+   * 上游只放 `sourceUrl`，由插件在安装时按地址读取；
+   * 本仓库不保存它们的规则 / 脚本正文。
    */
   source?: { manifest: SourceManifest; rule: DeclarativeRule };
 }
@@ -99,13 +136,13 @@ export function compareVersion(a: string, b: string): number {
   return 0;
 }
 
-/** KazumiRules/index.json → RegistryEntry[]。 */
-export function fromKazumiIndex(
+/** 漫画索引 → RegistryEntry[]。 */
+export function fromMangaIndex(
   raw: unknown,
   baseUrl: string,
   attribution = "KazumiRules",
 ): RegistryEntry[] {
-  if (!Array.isArray(raw)) throw new RspError("parse", "Kazumi 索引必须是数组");
+  if (!Array.isArray(raw)) throw new RspError("parse", "漫画索引必须是数组");
   const entries: RegistryEntry[] = [];
   for (const item of raw) {
     if (!isRecord(item)) continue;
@@ -113,9 +150,9 @@ export function fromKazumiIndex(
     if (!name) continue;
     const fileName = str(item.fileName) || `${name}.json`;
     entries.push({
-      id: `kazumi.${slug(name)}`,
+      id: `manga.${slug(name)}`,
       name,
-      upstream: "kazumi",
+      upstream: "manga",
       upstreamId: name,
       version: str(item.version) || "0.0.0",
       kind: ["anime"],
@@ -130,13 +167,13 @@ export function fromKazumiIndex(
   return entries;
 }
 
-/** venera_comic_source/index.json → RegistryEntry[]。 */
-export function fromVeneraIndex(
+/** 漫画源索引 → RegistryEntry[]。 */
+export function fromComicIndex(
   raw: unknown,
   baseUrl: string,
   attribution = "Venera comic sources",
 ): RegistryEntry[] {
-  if (!Array.isArray(raw)) throw new RspError("parse", "Venera 索引必须是数组");
+  if (!Array.isArray(raw)) throw new RspError("parse", "漫画索引必须是数组");
   const entries: RegistryEntry[] = [];
   for (const item of raw) {
     if (!isRecord(item)) continue;
@@ -146,9 +183,9 @@ export function fromVeneraIndex(
     const remote = str(item.url);
     const local = str(item.fileName);
     entries.push({
-      id: `venera.${slug(key)}`,
+      id: `comic.${slug(key)}`,
       name,
-      upstream: "venera",
+      upstream: "comic",
       upstreamId: key,
       version: str(item.version) || "0.0.0",
       kind: ["comic"],
@@ -159,7 +196,7 @@ export function fromVeneraIndex(
       license: undefined,
       attribution,
       warnings: [
-        "Venera 源为 JS 脚本；v1 只登记地址，不复制内容",
+        "安装时从上游地址读取 Venera 脚本",
         "单个源脚本的许可以上游文件为准",
       ],
     });
@@ -168,17 +205,17 @@ export function fromVeneraIndex(
 }
 
 /**
- * uzVideo 扩展索引 → RegistryEntry[]。
+ * 视频扩展索引 → RegistryEntry[]。
  *
- * uzVideo 没有稳定的官方 index（扩展以 `uzAio.zip` 分发），所以这里接受一份
+ * 视频扩展没有稳定的官方 index（扩展以 `uzAio.zip` 分发），所以这里接受一份
  * **用户/构建脚本整理出的条目数组**，字段尽量宽松。
  */
-export function fromUzVideoIndex(
+export function fromVideoIndex(
   raw: unknown,
   baseUrl: string,
   attribution = "uzVideo extensions",
 ): RegistryEntry[] {
-  if (!Array.isArray(raw)) throw new RspError("parse", "uzVideo 索引必须是数组");
+  if (!Array.isArray(raw)) throw new RspError("parse", "视频索引必须是数组");
   const entries: RegistryEntry[] = [];
   for (const item of raw) {
     if (!isRecord(item)) continue;
@@ -187,22 +224,88 @@ export function fromUzVideoIndex(
     const remote = str(item.url);
     const local = str(item.fileName);
     entries.push({
-      id: `uzvideo.${slug(str(item.key) || name)}`,
+      id: `video.${slug(str(item.key) || name)}`,
       name,
-      upstream: "uzvideo",
+      upstream: "video",
       upstreamId: str(item.key) || name,
       version: str(item.version) || "0.0.0",
       kind: ["anime"],
       engine: "js",
       sourceUrl: remote || joinUrl(baseUrl, local),
       homepage: baseUrl,
-      // 上游仓库未见 LICENSE ⇒ 默认保留所有权利，只登记、不复制。
+      // 上游仓库未见 LICENSE ⇒ 默认保留所有权利；只在用户安装时按地址读取。
       license: undefined,
       attribution,
       warnings: [
-        "uzVideo 扩展为 JS 脚本；上游未见 LICENSE，只登记地址、不复制内容",
-        "v1 不执行该脚本",
+        "安装时从上游地址读取 uzVideo 脚本",
+        "上游未见 LICENSE；使用前请自行确认授权",
       ],
+    });
+  }
+  return entries;
+}
+
+/** 采集站默认 UA（宿主网络层不代填 UA）。 */
+const CMS_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
+
+/**
+ * Apple CMS v10 采集接口索引 → RegistryEntry[]（2026-10-21）。
+ *
+ * 条目由本仓库生成：规则正文内嵌（只有接口地址），安装后直接用声明式执行器
+ * 的 `cms` 分支完成搜索 / 总览 / 剧集 / 播放，不再依赖上游脚本。
+ */
+export function fromCmsIndex(
+  raw: unknown,
+  attribution = "公开 TVBox / LibreTV 配置聚合",
+): RegistryEntry[] {
+  if (!Array.isArray(raw)) throw new RspError("parse", "CMS 索引必须是数组");
+  const entries: RegistryEntry[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const name = str(item.name);
+    const api = str(item.api);
+    if (!name || !/^https?:\/\//i.test(api)) continue;
+    let origin: string | undefined;
+    try {
+      origin = new URL(api).origin;
+    } catch {
+      continue;
+    }
+    const id = `cms.${slug(str(item.key) || name)}`;
+    const version = str(item.version) || "1.0.0";
+    const homepage = str(item.homepage) || origin;
+    entries.push({
+      id,
+      name,
+      upstream: "manual",
+      upstreamId: api,
+      version,
+      kind: ["tv"],
+      engine: "declarative",
+      homepage,
+      attribution,
+      warnings: [
+        "自建声明式 CMS 规则：只调用公开采集接口，不保存内容",
+        "接口地址与可用性随上游变化，失效时在来源管理中移除",
+      ],
+      source: {
+        manifest: {
+          rsp: RSP_VERSION,
+          id,
+          name,
+          version,
+          kind: ["tv"],
+          engine: "declarative",
+          entry: "rule.json",
+          baseUrl: origin,
+          homepage,
+          // 采集站普遍拒绝空 UA；宿主网络层不代填，这里显式给一个浏览器 UA。
+          headers: { "User-Agent": CMS_USER_AGENT },
+          capabilities: ["search", "explore", "chapters", "play"],
+        },
+        rule: { cms: { api } },
+      },
     });
   }
   return entries;
@@ -247,21 +350,24 @@ export function parseRegistry(raw: unknown): RegistryBundle {
   const entries: RegistryEntry[] = [];
   for (const item of raw.entries) {
     if (!isRecord(item)) continue;
-    const id = str(item.id);
+    const id = normalizeLegacyId(str(item.id));
     const name = str(item.name);
     if (!id || !name) continue;
     const embedded = item.source;
     const source =
       isRecord(embedded) && isRecord(embedded.manifest) && isRecord(embedded.rule)
         ? {
-            manifest: embedded.manifest as unknown as SourceManifest,
+            manifest: {
+              ...(embedded.manifest as unknown as SourceManifest),
+              id: normalizeLegacyId(str(embedded.manifest.id) || id),
+            },
             rule: embedded.rule as unknown as DeclarativeRule,
           }
         : undefined;
     entries.push({
       id,
       name,
-      upstream: str(item.upstream) as Upstream || "manual",
+      upstream: normalizeLegacyUpstream(str(item.upstream) || "manual"),
       upstreamId: str(item.upstreamId) || id,
       version: str(item.version) || "0.0.0",
       kind: Array.isArray(item.kind) ? (item.kind as SourceKind[]) : ["anime"],

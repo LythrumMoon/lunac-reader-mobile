@@ -1,6 +1,7 @@
 import {
   RSP_VERSION,
   RspError,
+  type ChaptersRule,
   type DeclarativeRule,
   type FieldExtractor,
   type ListRule,
@@ -9,12 +10,12 @@ import {
 import { validateSourceManifest } from "./manifest.js";
 
 /**
- * Kazumi 规则的公开字段（只声明我们用得到的部分）。
+ * 漫画规则的公开字段（只声明我们用得到的部分）。
  *
- * **这是格式参照，不是依赖**：我们不 import Kazumi 的代码、不运行它的 XPath 引擎，
+ * **这是格式参照，不是依赖**：我们不 import 上游代码、不运行它的 XPath 引擎，
  * 只把这份 JSON 翻译成 RSP 的声明式规则。真实规则由用户自行导入。
  */
-export interface KazumiRule {
+export interface MangaRule {
   api?: string;
   type?: string;
   name?: string;
@@ -27,7 +28,7 @@ export interface KazumiRule {
   searchResult?: string;
   chapterRoads?: string;
   chapterResult?: string;
-  searchApiConfig?: KazumiApiConfig;
+  searchApiConfig?: MangaApiConfig;
   useWebview?: boolean;
   useNativePlayer?: boolean;
   muliSources?: boolean;
@@ -39,7 +40,7 @@ export interface KazumiRule {
   [key: string]: unknown;
 }
 
-export interface KazumiApiConfig {
+export interface MangaApiConfig {
   request?: {
     method?: string;
     url?: string;
@@ -54,7 +55,7 @@ export interface KazumiApiConfig {
   [key: string]: unknown;
 }
 
-export interface KazumiConversion {
+export interface MangaConversion {
   manifest: SourceManifest;
   rule: DeclarativeRule;
   warnings: string[];
@@ -80,7 +81,7 @@ function slugId(name: string): string {
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
-  return `kazumi.${ascii || `source-${fnv1a(name)}`}`;
+  return `manga.${ascii || `source-${fnv1a(name)}`}`;
 }
 
 function asString(value: unknown, field: string): string {
@@ -105,7 +106,7 @@ function hrefField(selector: FieldExtractor["selector"]): FieldExtractor {
 }
 
 /**
- * Kazumi JSON → RSP 声明式规则。
+ * 漫画 JSON → RSP 声明式规则。
  *
  * 支持两种搜索模式：
  *  - `searchMode: "api"`：`searchApiConfig`（JSONPath）；
@@ -114,17 +115,17 @@ function hrefField(selector: FieldExtractor["selector"]): FieldExtractor {
  * 章节固定走 XPath：`chapterRoads` 为列表，`chapterResult` 为列表项里的链接。
  * 不支持的能力会写进 `warnings`，不静默丢弃。
  */
-export function convertKazumiRule(raw: unknown): KazumiConversion {
-  if (!isRecord(raw)) fail("Kazumi 规则必须是对象");
-  const rule = raw as KazumiRule;
+export function convertMangaRule(raw: unknown): MangaConversion {
+  if (!isRecord(raw)) fail("漫画规则必须是对象");
+  const rule = raw as MangaRule;
   const name = asString(rule.name, "name");
   const warnings: string[] = [];
 
   if (rule.type && rule.type !== "anime") {
-    warnings.push(`Kazumi type=${rule.type}，本转换器按 anime 处理`);
+    warnings.push(`漫画规则 type=${rule.type}，本转换器按 anime 处理`);
   }
   if (rule.useWebview) {
-    warnings.push("useWebview 需要宿主 WebView 嗅探，v1 不执行该字段");
+    warnings.push("useWebview 由宿主隐藏 WebView 嗅探执行（需 webview.sniff 权限）");
   }
   if (rule.muliSources) {
     warnings.push("muliSources 多镜像暂不支持，只取主站");
@@ -150,7 +151,7 @@ export function convertKazumiRule(raw: unknown): KazumiConversion {
     baseUrl: optionalString(rule.baseURL) ?? "",
     homepage: optionalString(rule.baseURL) ?? "",
     license: "user-imported",
-    capabilities: chapters ? ["search", "chapters"] : ["search"],
+    capabilities: chapters ? ["search", "chapters", "play"] : ["search"],
     nsfw: false,
   };
 
@@ -161,12 +162,18 @@ export function convertKazumiRule(raw: unknown): KazumiConversion {
 
   return {
     manifest: validateSourceManifest(manifestInput),
-    rule: { search, ...(chapters ? { chapters } : {}) },
+    // Kazumi 的番剧规则本身不含播放地址：剧集页交给宿主隐藏 WebView 嗅探
+    // （2026-10-21，对应上游 `useWebview`）。
+    rule: {
+      search,
+      ...(chapters ? { chapters } : {}),
+      ...(chapters ? { sniff: { url: "@chapterUrl" } } : {}),
+    },
     warnings,
   };
 }
 
-function convertSearch(rule: KazumiRule, warnings: string[]): ListRule {
+function convertSearch(rule: MangaRule, warnings: string[]): ListRule {
   const config = rule.searchApiConfig;
   if ((rule.searchMode === "api" || config) && config) {
     const request = config.request;
@@ -205,7 +212,7 @@ function convertSearch(rule: KazumiRule, warnings: string[]): ListRule {
   if (!searchURL || !searchList) {
     throw new RspError(
       "unsupported",
-      "Kazumi 规则缺少 searchURL/searchList（且没有 searchApiConfig）",
+      "漫画规则缺少 searchURL/searchList（且没有 searchApiConfig）",
     );
   }
   if (!searchURL.includes("@keyword")) {
@@ -223,17 +230,23 @@ function convertSearch(rule: KazumiRule, warnings: string[]): ListRule {
   };
 }
 
-function convertChapters(rule: KazumiRule): ListRule | undefined {
+function convertChapters(rule: MangaRule): ChaptersRule | undefined {
   const roads = optionalString(rule.chapterRoads);
   const result = optionalString(rule.chapterResult);
   if (!roads || !result) return undefined;
   return {
-    // `@workUrl` 由执行器替换为详情页 URL；Kazumi 的章节页就是详情页。
+    // `@workUrl` 由执行器替换为详情页 URL；漫画规则的章节页就是详情页。
     request: { method: "GET", url: "@workUrl" },
+    // 漫画规则：chapterRoads 选线路容器，chapterResult 在线路内选剧集链接。
     list: { xpath: roads },
-    fields: {
-      id: hrefField({ xpath: result }),
-      title: textField({ xpath: result }),
+    fields: {},
+    sub: {
+      list: { xpath: result },
+      // 剧集链接本身就是 sub.list 选中的节点，字段在节点自身取值。
+      fields: {
+        id: hrefField({ xpath: "." }),
+        title: textField({ xpath: "." }),
+      },
     },
   };
 }

@@ -6,6 +6,8 @@
 import {
   RspError,
   type Chapter,
+  type ChaptersRule,
+  type CmsRule,
   type ComicPage,
   type DeclarativeRule,
   type ListRule,
@@ -23,6 +25,7 @@ import {
   extractHtmlRows,
   extractJsonRows,
   interpolate,
+  selectElements,
   type RuleVars,
 } from "./evaluate.js";
 import type { LunacHostV3, NetApi } from "./host.js";
@@ -51,8 +54,8 @@ function resolveUrl(baseUrl: string | undefined, value: string): string {
   if (!value) return "";
   if (/^https?:\/\//i.test(value) || !baseUrl) return value;
   try {
-    const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-    return new URL(value.replace(/^\//, ""), base).toString();
+    // 交给 URL 处理站内绝对路径（/x）与子目录 baseUrl，避免手工拼错。
+    return new URL(value, baseUrl).toString();
   } catch {
     return value;
   }
@@ -75,20 +78,215 @@ function statusError(status: number, url: string, sourceId: string): RspError {
   return new RspError("network", `HTTP ${status}：${url}`, sourceId);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return String(value);
+  return "";
+}
+
+function stripTags(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** `vod_play_from` / `vod_play_url` 的多线路分隔符。 */
+function splitLines(value: unknown): string[] {
+  return asText(value)
+    .split("$$$")
+    .map((line) => line.trim());
+}
+
+function isMediaUrl(url: string): boolean {
+  return /\.(?:m3u8|mp4|m4v|flv)(?:\?|$)/i.test(url);
+}
+
+const CMS_UNSUPPORTED = "暂不支持搜索";
+
+/**
+ * Apple CMS v10（MacCMS）采集接口来源。
+ *
+ * 约定（公开聚合配置的事实标准）：
+ *  - 搜索 / 列表：`?ac=detail&wd=<关键词>&pg=<页>`；
+ *  - 详情：`?ac=detail&ids=<vod_id>`，`vod_play_url` 形如
+ *    `线路1$第1集$https://a.m3u8#第2集$https://b.m3u8$$$线路2$…`；
+ *  - 剧集地址直接作为 `Chapter.id`，播放时优先直链，不是直链再交给 WebView 嗅探。
+ */
+function createCmsSource(
+  manifest: SourceManifest,
+  cms: CmsRule,
+  deps: DeclarativeSourceDeps,
+): ResourceSource {
+  const sourceId = manifest.id;
+  const net = deps.net ?? deps.host.net;
+  const api = cms.api.trim();
+  if (!/^https?:\/\//i.test(api)) {
+    throw new RspError("parse", `${sourceId} 的 cms.api 必须是 http(s) 绝对地址`, sourceId);
+  }
+  const origin = new URL(api).origin;
+  const headers = { ...manifest.headers, ...cms.headers };
+
+  async function fetchList(
+    query: Record<string, string | number | undefined>,
+    options?: SourceCallOptions,
+  ): Promise<Record<string, unknown>[]> {
+    const url = new URL(api);
+    url.searchParams.set("ac", "detail");
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === "") continue;
+      url.searchParams.set(key, String(value));
+    }
+    const response = await net.request({
+      url: url.toString(),
+      method: "GET",
+      headers,
+      timeoutMs: options?.timeoutMs ?? 8_000,
+      signal: options?.signal,
+    });
+    if (response.status >= 400) {
+      throw statusError(response.status, url.toString(), sourceId);
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(response.body.replace(/^\uFEFF/, ""));
+    } catch {
+      // 部分站点在关闭搜索时返回纯文本（如「暂不支持搜索」），照原样抛给用户。
+      const plain = stripTags(response.body).slice(0, 40);
+      throw new RspError(
+        "unsupported",
+        plain.includes(CMS_UNSUPPORTED) ? "该采集站未开放搜索" : `响应不是合法 JSON：${plain}`,
+        sourceId,
+      );
+    }
+    const root = isRecord(payload) ? payload : {};
+    const data = isRecord(root.data) ? root.data : root;
+    const list = data.list ?? root.list;
+    const items = Array.isArray(list) ? list : isRecord(list) ? Object.values(list) : [];
+    return items.filter(isRecord);
+  }
+
+  function toWork(item: Record<string, unknown>): Work | undefined {
+    const id = asText(item.vod_id);
+    if (!id) return undefined;
+    const cover = asText(item.vod_pic);
+    const content = asText(item.vod_content);
+    const tags = asText(item.type_name)
+      .split(/[,，/]/)
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    return {
+      ref: { sourceId, workId: id, kind: manifest.kind[0] ?? "tv" },
+      title: asText(item.vod_name) || id,
+      author: asText(item.vod_director) || undefined,
+      cover: cover ? resolveUrl(origin, cover) : undefined,
+      description: content ? stripTags(content) : undefined,
+      tags: tags.length > 0 ? tags : undefined,
+      extra: {
+        remarks: asText(item.vod_remarks) || undefined,
+        year: asText(item.vod_year) || undefined,
+        area: asText(item.vod_area) || undefined,
+      },
+    };
+  }
+
+  const source: ResourceSource = {
+    manifest,
+    async search(query: string, page = 1, options?: SourceCallOptions): Promise<Paged<Work>> {
+      const rows = await fetchList({ wd: query, pg: page }, options);
+      return {
+        items: rows.map(toWork).filter((work): work is Work => !!work),
+        next: rows.length > 0 ? String(page + 1) : null,
+      };
+    },
+    async explore(section = "", page = 1, options?: SourceCallOptions): Promise<Paged<Work>> {
+      const rows = await fetchList({ t: section, pg: page }, options);
+      return {
+        items: rows.map(toWork).filter((work): work is Work => !!work),
+        next: rows.length > 0 ? String(page + 1) : null,
+      };
+    },
+    async chapters(ref: WorkRef, options?: SourceCallOptions): Promise<Chapter[]> {
+      const rows = await fetchList({ ids: ref.workId }, options);
+      const item = rows[0];
+      if (!item) throw new RspError("parse", `采集接口没有返回详情：${ref.workId}`, sourceId);
+      const froms = splitLines(item.vod_play_from);
+      const lines = splitLines(item.vod_play_url);
+      const chapters: Chapter[] = [];
+      lines.forEach((line, lineIndex) => {
+        const group = froms[lineIndex] || `线路${lineIndex + 1}`;
+        for (const entry of line.split("#")) {
+          const raw = entry.trim();
+          if (!raw) continue;
+          const at = raw.indexOf("$");
+          const title = at >= 0 ? raw.slice(0, at).trim() : "";
+          const url = at >= 0 ? raw.slice(at + 1).trim() : raw;
+          if (!/^https?:\/\//i.test(url)) continue;
+          chapters.push({
+            id: url,
+            workId: ref.workId,
+            title: title || `${chapters.length + 1}`,
+            index: chapters.length,
+            ...(lines.length > 1 ? { group } : {}),
+          });
+        }
+      });
+      if (chapters.length === 0) {
+        throw new RspError("parse", "详情里没有可播放的剧集地址", sourceId);
+      }
+      return chapters;
+    },
+    async play(chapter: Chapter, options?: SourceCallOptions): Promise<Playback[]> {
+      const url = /^https?:\/\//i.test(chapter.id)
+        ? chapter.id
+        : resolveUrl(origin, chapter.id);
+      const type: Playback["type"] = /\.m3u8(?:\?|$)/i.test(url) ? "hls" : "mp4";
+      if (isMediaUrl(url)) {
+        return [{ url, type, ...(Object.keys(headers).length > 0 ? { headers } : {}) }];
+      }
+      // 采集站给出的是播放页（如 `https://play.x.com/play/xxx`）：交给宿主嗅探。
+      if (cms.sniff === false) {
+        throw new RspError("unsupported", `剧集地址不是直链：${url}`, sourceId);
+      }
+      if (!deps.host.sniff) {
+        throw new RspError("unsupported", "宿主未实现 WebView 嗅探（需 webview.sniff）", sourceId);
+      }
+      const urls = await deps.host.sniff.media(url, {
+        timeoutMs: cms.sniffTimeoutMs ?? options?.timeoutMs,
+      });
+      return urls
+        .filter((item) => item !== "")
+        .map((item): Playback => ({
+          url: item,
+          type: /\.m3u8(?:\?|$)/i.test(item) ? "hls" : "mp4",
+          ...(Object.keys(headers).length > 0 ? { headers } : {}),
+        }));
+    },
+  };
+
+  return source;
+}
+
 export function createDeclarativeSource(
   input: DeclarativeSourceInput,
   deps: DeclarativeSourceDeps,
 ): ResourceSource {
   const { manifest, rule } = input;
+  if (rule.cms) return createCmsSource(manifest, rule.cms, deps);
   const sourceId = manifest.id;
   const parseHtml = deps.parseHtml ?? defaultParseHtml;
   const net = deps.net ?? deps.host.net;
 
-  async function runList(
+  async function runListWithRoot(
     listRule: ListRule,
     vars: RuleVars,
     options?: SourceCallOptions,
-  ): Promise<Record<string, string>[]> {
+  ): Promise<{ rows: Record<string, string>[]; root?: ParentNode }> {
     const url = buildRequestUrl(manifest.baseUrl, listRule.request, vars);
     const headers = {
       ...interpolateMap(manifest.headers, vars),
@@ -115,9 +313,18 @@ export function createDeclarativeSource(
       } catch {
         throw new RspError("parse", `响应不是合法 JSON：${url}`, sourceId);
       }
-      return extractJsonRows(payload, listRule, vars);
+      return { rows: extractJsonRows(payload, listRule, vars) };
     }
-    return extractHtmlRows(parseHtml(response.body), listRule, vars);
+    const root = parseHtml(response.body);
+    return { rows: extractHtmlRows(root, listRule, vars), root };
+  }
+
+  async function runList(
+    listRule: ListRule,
+    vars: RuleVars,
+    options?: SourceCallOptions,
+  ): Promise<Record<string, string>[]> {
+    return (await runListWithRoot(listRule, vars, options)).rows;
   }
 
   function baseVars(): RuleVars {
@@ -169,17 +376,61 @@ export function createDeclarativeSource(
       const items = rowsToWorks(rows);
       return { items, next: rows.length > 0 ? String(page + 1) : null };
     },
+    async explore(section = "", page = 1, options?: SourceCallOptions): Promise<Paged<Work>> {
+      if (!rule.explore) {
+        throw new RspError("unsupported", `${sourceId} 没有 explore 规则`, sourceId);
+      }
+      const rows = await runList(rule.explore, { ...baseVars(), section, page }, options);
+      const items = rowsToWorks(rows);
+      return { items, next: rows.length > 0 ? String(page + 1) : null };
+    },
     async chapters(ref: WorkRef, options?: SourceCallOptions): Promise<Chapter[]> {
       if (!rule.chapters) {
         throw new RspError("unsupported", `${sourceId} 没有 chapters 规则`, sourceId);
       }
-      const rows = await runList(rule.chapters, chapterVars(ref), options);
-      return rows.map((row, index) => ({
-        id: row.id || row.url || String(index),
-        workId: ref.workId,
-        title: row.title || `${index + 1}`,
-        index,
-      }));
+      const chaptersRule: ChaptersRule = rule.chapters;
+      const vars = chapterVars(ref);
+      const { rows, root } = await runListWithRoot(chaptersRule, vars, options);
+
+      // 扁平规则：list 的每一项就是章节。
+      if (!chaptersRule.sub || !root) {
+        return rows.map((row, index) => ({
+          id: row.id || row.url || String(index),
+          workId: ref.workId,
+          title: row.title || `${index + 1}`,
+          index,
+        }));
+      }
+
+      // 两层规则：list 取线路，sub 在线路节点内取剧集（Kazumi chapterRoads/chapterResult）。
+      const groups = selectElements(root, chaptersRule.list);
+      const chapters: Chapter[] = [];
+      groups.forEach((group, groupIndex) => {
+        const groupTitle = `线路${groupIndex + 1}`;
+        const episodes = extractHtmlRows(
+          group,
+          {
+            request: chaptersRule.request,
+            list: chaptersRule.sub!.list,
+            fields: chaptersRule.sub!.fields,
+          },
+          vars,
+        );
+        for (const row of episodes) {
+          const id = row.id || row.url;
+          if (!id) continue;
+          const index = chapters.length;
+          const title = row.title || `${index + 1}`;
+          chapters.push({
+            id,
+            workId: ref.workId,
+            title: groups.length > 1 ? `${groupTitle} · ${title}` : title,
+            index,
+            ...(groups.length > 1 ? { group: groupTitle } : {}),
+          });
+        }
+      });
+      return chapters;
     },
     async pages(chapter: Chapter, options?: SourceCallOptions): Promise<ComicPage[]> {
       if (!rule.pages) {
@@ -199,14 +450,43 @@ export function createDeclarativeSource(
       }
       const rows = await runList(rule.content, chapterVarsFromChapter(chapter), options);
       const content = rows[0]?.content ?? rows[0]?.text ?? "";
-      return { chapterId: chapter.id, format: "text", content };
+      return {
+        chapterId: chapter.id,
+        format: rule.contentFormat ?? "text",
+        content,
+      };
     },
     async play(chapter: Chapter, options?: SourceCallOptions): Promise<Playback[]> {
+      const vars = chapterVarsFromChapter(chapter);
+      if (rule.sniff) {
+        const pageUrl = resolveUrl(manifest.baseUrl, interpolate(rule.sniff.url, vars));
+        if (!pageUrl) {
+          throw new RspError("parse", `${sourceId} 的嗅探地址为空`, sourceId);
+        }
+        if (!deps.host.sniff) {
+          throw new RspError(
+            "unsupported",
+            "宿主未实现 WebView 嗅探（需 webview.sniff）",
+            sourceId,
+          );
+        }
+        const urls = await deps.host.sniff.media(pageUrl, {
+          timeoutMs: rule.sniff.timeoutMs ?? options?.timeoutMs,
+        });
+        const headers = interpolateMap(manifest.headers, vars);
+        return urls
+          .filter((url) => url !== "")
+          .map((url): Playback => ({
+            url,
+            type: /\.m3u8(\?|$)/i.test(url) ? "hls" : "mp4",
+            ...(Object.keys(headers).length > 0 ? { headers } : {}),
+          }));
+      }
       if (!rule.play) {
         throw new RspError("unsupported", `${sourceId} 没有 play 规则`, sourceId);
       }
-      const rows = await runList(rule.play, chapterVarsFromChapter(chapter), options);
-      const headers = interpolateMap(manifest.headers, chapterVarsFromChapter(chapter));
+      const rows = await runList(rule.play, vars, options);
+      const headers = interpolateMap(manifest.headers, vars);
       return rows
         .map((row): Playback => {
           const url = resolveUrl(manifest.baseUrl, row.url || row.playUrl || "");

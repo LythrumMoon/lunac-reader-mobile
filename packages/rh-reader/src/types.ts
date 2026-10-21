@@ -3,9 +3,18 @@
 
 export type ReaderMode = "vertical" | "paged" | "webtoon";
 
+/**
+ * 裁剪模式（按顺序循环）：
+ *  - `off`：原图，保留阅读边距；
+ *  - `margin`：收紧页边距；
+ *  - `trim`：收紧边距并自动裁掉图片白边；
+ *  - `split`：在 `trim` 基础上把跨页大图拆成左右两半。
+ */
+export type ReaderCropMode = "off" | "margin" | "trim" | "split";
+
 export type TapZone = "prev" | "next" | "toggle";
 
-export type PageKind = "text" | "placeholder" | "image";
+export type PageKind = "text" | "html" | "placeholder" | "image";
 
 export interface ReaderPage {
   id: string;
@@ -33,7 +42,7 @@ export interface ReaderSnapshot {
   speed: number;
   locked: boolean;
   barsVisible: boolean;
-  cropMode: boolean;
+  cropMode: ReaderCropMode;
   autoplay: boolean;
 }
 
@@ -42,12 +51,15 @@ export interface ReaderInitialState {
   pageIndex?: number;
   mode?: ReaderMode;
   speed?: number;
-  cropMode?: boolean;
+  /** 兼容旧调用：`true` = `margin`，`false` = `off`。 */
+  cropMode?: ReaderCropMode | boolean;
 }
 
 export const READER_SPEEDS = [0.5, 1, 1.5, 2, 3] as const;
 
 export const READER_MODES: ReaderMode[] = ["vertical", "paged", "webtoon"];
+
+export const READER_CROP_MODES: ReaderCropMode[] = ["off", "margin", "trim", "split"];
 
 /**
  * 点击分区：

@@ -58,6 +58,32 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
+test("执行器：explore 规则拉取来源总览（section / page 占位符）", async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (url: string | URL | Request) => {
+    calls.push(String(url));
+    return jsonResponse({ data: [{ id: "9", title: "新作" }] });
+  }) as unknown as typeof fetch;
+  const exploreRule: DeclarativeRule = {
+    explore: {
+      request: { method: "GET", url: "/home/@section", query: { page: "@page" } },
+      list: { jsonPath: "$.data[*]" },
+      fields: {
+        id: { selector: { jsonPath: "id" } },
+        title: { selector: { jsonPath: "title" } },
+      },
+    },
+  };
+  const source = createDeclarativeSource(
+    { manifest, rule: exploreRule },
+    { host: createMockHost({ fetchImpl }) },
+  );
+  const page = await source.explore!("推荐", 2);
+
+  assert.equal(calls[0], "https://api.test/home/%E6%8E%A8%E8%8D%90?page=2");
+  assert.deepEqual(page.items.map((item) => [item.ref.workId, item.title]), [["9", "新作"]]);
+});
+
 test("执行器：JSON 搜索映射为 Work，并带分页与 manifest headers", async () => {
   const calls: { url: string; init?: RequestInit }[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -194,3 +220,139 @@ test("执行器：未声明的能力抛 unsupported", async () => {
     (error: unknown) => error instanceof RspError && error.code === "unsupported",
   );
 });
+
+test("执行器：sniff 规则交给宿主 WebView 嗅探（@chapterUrl）", async () => {
+  const sniffed: string[] = [];
+  const host = createMockHost({
+    sniffMedia: (url) => {
+      sniffed.push(url);
+      return ["https://cdn.test/a.m3u8?token=1", "https://cdn.test/b.mp4"];
+    },
+  });
+  const source = createDeclarativeSource(
+    {
+      manifest: { ...manifest, kind: ["anime"], capabilities: ["search", "chapters", "play"] },
+      rule: { sniff: { url: "@chapterUrl" } },
+    },
+    { host },
+  );
+  const playbacks = await source.play!({ id: "/ep/1", workId: "w1", title: "第 1 话", index: 0 });
+  assert.deepEqual(sniffed, ["https://api.test/ep/1"]);
+  assert.deepEqual(playbacks.map((item) => item.type), ["hls", "mp4"]);
+  assert.deepEqual(playbacks.map((item) => item.url), [
+    "https://cdn.test/a.m3u8?token=1",
+    "https://cdn.test/b.mp4",
+  ]);
+});
+
+const cmsManifest: SourceManifest = {
+  rsp: 1,
+  id: "cms.demo",
+  name: "CMS Demo",
+  version: "1.0.0",
+  kind: ["tv"],
+  engine: "declarative",
+  entry: "rule.json",
+  capabilities: ["search", "explore", "chapters", "play"],
+};
+
+const cmsItem = {
+  vod_id: 42,
+  vod_name: "庆余年 第一季",
+  vod_pic: "/upload/1.jpg",
+  vod_content: "<p>少年范闲的故事</p>",
+  type_name: "国产剧,古装",
+  vod_remarks: "更新至 46 集",
+  vod_year: "2019",
+  vod_area: "大陆",
+  vod_play_from: "线路1$$$线路2",
+  vod_play_url:
+    "第1集$https://cdn.test/1.m3u8#第2集$https://cdn.test/2.m3u8$$$第1集$https://play.test/ep/1",
+};
+
+test("执行器：CMS 采集接口搜索 / 剧集 / 直链播放", async () => {
+  const urls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("ids=")) return jsonResponse({ list: [cmsItem] });
+    return jsonResponse({ code: 1, list: [cmsItem] });
+  }) as unknown as typeof fetch;
+  const source = createDeclarativeSource(
+    { manifest: cmsManifest, rule: { cms: { api: "https://cms.test/api.php/provide/vod" } } },
+    { host: createMockHost({ fetchImpl }) },
+  );
+
+  const page = await source.search!("庆余年", 2);
+  assert.equal(
+    urls[0],
+    "https://cms.test/api.php/provide/vod?ac=detail&wd=%E5%BA%86%E4%BD%99%E5%B9%B4&pg=2",
+  );
+  assert.deepEqual(page.items[0], {
+    ref: { sourceId: "cms.demo", workId: "42", kind: "tv" },
+    title: "庆余年 第一季",
+    author: undefined,
+    cover: "https://cms.test/upload/1.jpg",
+    description: "少年范闲的故事",
+    tags: ["国产剧", "古装"],
+    extra: { remarks: "更新至 46 集", year: "2019", area: "大陆" },
+  });
+
+  const explore = await source.explore!("", 1);
+  assert.equal(explore.items.length, 1);
+  assert.ok(urls[1].includes("ac=detail&pg=1"));
+
+  const chapters = await source.chapters!({ sourceId: "cms.demo", workId: "42", kind: "tv" });
+  assert.equal(chapters.length, 3);
+  assert.deepEqual(
+    chapters.map((chapter) => [chapter.title, chapter.group, chapter.id]),
+    [
+      ["第1集", "线路1", "https://cdn.test/1.m3u8"],
+      ["第2集", "线路1", "https://cdn.test/2.m3u8"],
+      ["第1集", "线路2", "https://play.test/ep/1"],
+    ],
+  );
+
+  const playback = await source.play!(chapters[0]);
+  assert.deepEqual(playback.map((item) => [item.type, item.url]), [
+    ["hls", "https://cdn.test/1.m3u8"],
+  ]);
+});
+
+test("执行器：CMS 播放页回退到 WebView 嗅探", async () => {
+  const sniffed: string[] = [];
+  const fetchImpl = (async () => jsonResponse({ list: [cmsItem] })) as unknown as typeof fetch;
+  const host = createMockHost({
+    fetchImpl,
+    sniffMedia: (url) => {
+      sniffed.push(url);
+      return ["https://cdn.test/sniffed.m3u8"];
+    },
+  });
+  const source = createDeclarativeSource(
+    { manifest: cmsManifest, rule: { cms: { api: "https://cms.test/api.php/provide/vod" } } },
+    { host },
+  );
+  const chapters = await source.chapters!({ sourceId: "cms.demo", workId: "42", kind: "tv" });
+  const playback = await source.play!(chapters[2]);
+
+  assert.deepEqual(sniffed, ["https://play.test/ep/1"]);
+  assert.deepEqual(playback.map((item) => [item.type, item.url]), [
+    ["hls", "https://cdn.test/sniffed.m3u8"],
+  ]);
+});
+
+test("执行器：CMS 关闭搜索时给出可读错误", async () => {
+  const fetchImpl = (async () =>
+    new Response("暂不支持搜索", { status: 200 })) as unknown as typeof fetch;
+  const source = createDeclarativeSource(
+    { manifest: cmsManifest, rule: { cms: { api: "https://cms.test/api.php/provide/vod" } } },
+    { host: createMockHost({ fetchImpl }) },
+  );
+  await assert.rejects(
+    source.search!("x"),
+    (error: unknown) =>
+      error instanceof RspError && error.code === "unsupported" && error.message.includes("未开放搜索"),
+  );
+});
+

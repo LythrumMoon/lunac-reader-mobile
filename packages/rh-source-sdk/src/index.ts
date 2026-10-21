@@ -12,12 +12,14 @@ export {
   type LunacHostV3,
   type MediaApi,
   type NetApi,
+  type SniffApi,
   type StorageApi,
 } from "./host.js";
 export {
   createMockEngine,
   createMockHost,
   createMockNet,
+  createMockSniff,
   createMockStorage,
   type MockHostOptions,
 } from "./mock-host.js";
@@ -43,19 +45,44 @@ export {
   type DeclarativeSourceInput,
 } from "./executor.js";
 export {
-  convertKazumiRule,
-  type KazumiApiConfig,
-  type KazumiConversion,
-  type KazumiRule,
-} from "./kazumi.js";
+  createJsSource,
+  toRspError,
+  type JsSourceInput,
+} from "./js-source.js";
+export {
+  createComicSource,
+  looksLikeComic,
+  type ComicSourceInput,
+} from "./comic-source.js";
+export {
+  createVideoSource,
+  looksLikeVideo,
+  videoHasExplore,
+  type VideoSourceInput,
+} from "./video-source.js";
+export {
+  convertMangaRule,
+  type MangaApiConfig,
+  type MangaConversion,
+  type MangaRule,
+} from "./manga.js";
 export {
   compareVersion,
-  fromKazumiIndex,
-  fromUzVideoIndex,
-  fromVeneraIndex,
+  fromMangaIndex,
+  fromVideoIndex,
+  fromComicIndex,
+  fromCmsIndex,
   mergeRegistry,
+  normalizeLegacyId,
+  normalizeLegacyUpstream,
   parseRegistry,
   type RegistryBundle,
   type RegistryEntry,
   type Upstream,
 } from "./registry.js";
+export {
+  htmlToText,
+  parseEpub,
+  type EpubBook,
+  type EpubChapter,
+} from "./epub.js";

@@ -71,7 +71,7 @@ test("mock engine：默认拒绝，allowEval 后可执行", async () => {
     (error: unknown) => error instanceof RspError && error.code === "unsupported",
   );
   const allowed = createMockHost({ allowEval: true });
-  assert.equal(await allowed.engine.eval("return args.n + 1", { args: { n: 1 } }), 2);
+  assert.equal(await allowed.engine.eval("args.n + 1", { args: { n: 1 } }), 2);
 });
 
 test("宿主探测：无桥 / 版本不符 / 完整 v3", () => {

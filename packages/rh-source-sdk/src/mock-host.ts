@@ -11,6 +11,7 @@ import {
   type HostResponse,
   type LunacHostV3,
   type NetApi,
+  type SniffApi,
   type StorageApi,
 } from "./host.js";
 
@@ -21,6 +22,13 @@ export interface MockHostOptions {
   seed?: Record<string, unknown>;
   /** 是否允许 engine.eval 用 Function 执行；默认 false（抛 unsupported）。 */
   allowEval?: boolean;
+  /**
+   * 沙箱内 `host.request(JSON)` 的替身；返回宿主同款信封 JSON。
+   * 缺省一律回 `{ ok: false }`（测试若不需要网络可不管）。
+   */
+  engineRequest?: (optionsJson: string) => string;
+  /** WebView 嗅探替身（2026-10-21）；缺省返回空数组（即「没嗅到」）。 */
+  sniffMedia?: (url: string) => string[] | Promise<string[]>;
 }
 
 export function createMockStorage(seed: Record<string, unknown> = {}): StorageApi {
@@ -103,6 +111,10 @@ export function createMockNet(options: MockHostOptions = {}): NetApi {
 }
 
 export function createMockEngine(options: MockHostOptions = {}): EngineApi {
+  const request =
+    options.engineRequest
+    ?? ((_optionsJson: string) =>
+      JSON.stringify({ ok: false, error: "mock 宿主未提供 host.request" }));
   return {
     async eval(code: string, evalOptions): Promise<unknown> {
       if (!options.allowEval) {
@@ -112,8 +124,22 @@ export function createMockEngine(options: MockHostOptions = {}): EngineApi {
           undefined,
         );
       }
-      const fn = new Function("args", `"use strict";\n${code}`);
-      return fn(evalOptions?.args);
+      // 用**直接 eval** 模拟宿主 `ctx.eval` 的「完成值」语义：
+      // `new Function` 的函数体不会返回最后一条语句的值。
+      const fn = new Function(
+        "args",
+        "host",
+        `"use strict";\nreturn eval(${JSON.stringify(code)});`,
+      );
+      return fn(evalOptions?.args, { request });
+    },
+  };
+}
+
+export function createMockSniff(options: MockHostOptions = {}): SniffApi {
+  return {
+    async media(url: string): Promise<string[]> {
+      return options.sniffMedia ? await options.sniffMedia(url) : [];
     },
   };
 }
@@ -129,5 +155,6 @@ export function createMockHost(options: MockHostOptions = {}): LunacHostV3 {
     },
     storage: createMockStorage(options.seed),
     engine: createMockEngine(options),
+    sniff: createMockSniff(options),
   };
 }

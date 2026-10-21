@@ -124,13 +124,72 @@ export interface ListRule {
   };
 }
 
+/**
+ * 章节规则：除扁平列表外，支持「线路 → 剧集」两层结构
+ * （Kazumi 的 `chapterRoads` 取线路，`chapterResult` 在线路内取剧集）。
+ */
+export interface ChaptersRule extends ListRule {
+  /** 每个线路节点下的剧集列表；缺省时 `list` 本身就是章节。 */
+  sub?: {
+    list: Selector;
+    fields: Record<string, FieldExtractor>;
+  };
+}
+
+/**
+ * Apple CMS v10（MacCMS）采集接口（2026-10-21）。
+ *
+ * 公开影视聚合配置（TVBox / LibreTV 等）里的站点绝大多数是这套接口：
+ * `?ac=detail&wd=` 搜索、`?ac=detail&ids=` 详情、`vod_play_url` 里是「剧集名$地址#…」。
+ * 写规则时只需要接口地址，搜索 / 总览 / 剧集 / 播放都由执行器按同一套约定完成。
+ */
+export interface CmsRule {
+  /** 采集接口绝对地址，如 `https://x/api.php/provide/vod`；查询串由执行器追加。 */
+  api: string;
+  /** 额外的请求头（站点校验 Referer 时用）。 */
+  headers?: Record<string, string>;
+  /**
+   * 剧集地址不是直链（m3u8 / mp4）时改用宿主 WebView 嗅探，缺省开启。
+   * 需要插件声明 `webview.sniff`。
+   */
+  sniff?: boolean;
+  sniffTimeoutMs?: number;
+}
+
+/** WebView 嗅探规则（2026-10-21）：把剧集页交给宿主隐藏 WebView，拦截媒体请求。 */
+export interface SniffRule {
+  /** 剧集页地址，支持 `@chapterUrl` / `@chapterId` / `@workUrl` 占位符。 */
+  url: string;
+  /** 最长等待毫秒数；缺省由宿主决定（15s）。 */
+  timeoutMs?: number;
+}
+
 export interface DeclarativeRule {
   search?: ListRule;
-  chapters?: ListRule;
+  /** 总览 / 分类列表：`section` / `page` 可做 URL 占位符。 */
+  explore?: ListRule;
+  chapters?: ChaptersRule;
   pages?: ListRule;
   play?: ListRule;
+  /** Apple CMS v10 采集接口（与上面的通用规则二选一）。 */
+  cms?: CmsRule;
+  /**
+   * 播放地址靠 WebView 嗅探（Kazumi `useWebview`，2026-10-21）：
+   * 打开 `url`（支持 `@chapterUrl` 等占位符）并拦截 m3u8 / mp4。
+   * 与 `play` 二选一；宿主需声明 `permissions: ["webview.sniff"]`。
+   */
+  sniff?: SniffRule;
   content?: ListRule;
+  /**
+   * `content` 输出的解释方式（缺省 `text`）：
+   *  - `text`：正文纯文本；
+   *  - `html`：正文 HTML，阅读器按白名单转纯文本；
+   *  - `epub`：输出的是 EPUB 文件的 http(s) 地址，由阅读器下载并按 spine 展开。
+   */
+  contentFormat?: TextFormat;
 }
+
+export type TextFormat = "text" | "html" | "epub";
 
 // ── 清单 ────────────────────────────────────────────────────────
 export interface SourceManifest {
@@ -148,6 +207,11 @@ export interface SourceManifest {
   license?: string;
   minHost?: string;
   headers?: Record<string, string>;
+  /**
+   * 来源设置覆盖（键名与脚本 `settings` 一致，如 `domains` / `base_url`）。
+   * JS 源读取设置时优先使用这里的值，便于域名失效后按来源切换。
+   */
+  settings?: Record<string, string>;
   capabilities: RspCapability[];
   rateLimit?: { rps: number; burst: number };
   nsfw?: boolean;

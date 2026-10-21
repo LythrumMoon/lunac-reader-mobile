@@ -78,6 +78,7 @@ export function validateSourceManifest(raw: unknown): SourceManifest {
   }
 
   const headers = raw.headers === undefined ? undefined : readStringMap(raw.headers, "headers");
+  const settings = raw.settings === undefined ? undefined : readStringMap(raw.settings, "settings");
   const rateLimit = readRateLimit(raw.rateLimit);
 
   return {
@@ -93,6 +94,7 @@ export function validateSourceManifest(raw: unknown): SourceManifest {
     license: readOptionalString(raw.license, "license"),
     minHost: readOptionalString(raw.minHost, "minHost"),
     headers,
+    settings,
     capabilities,
     rateLimit,
     nsfw: raw.nsfw === true,

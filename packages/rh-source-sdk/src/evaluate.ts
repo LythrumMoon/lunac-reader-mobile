@@ -174,43 +174,104 @@ export function extractJsonRows(
     .filter((row) => Object.values(row).some((value) => value !== ""));
 }
 
-/** CSS / XPath 选择器 → 元素列表。XPath 以 `.` 开头时相对当前节点。 */
-export function selectElements(root: ParentNode, selector: Selector): Element[] {
-  if (selector.css) {
-    return [...root.querySelectorAll(selector.css)];
-  }
-  if (!selector.xpath) return [];
+/** XPath 在元素上下文里要按「相对当前节点」求值；`//x` → `.//x`。 */
+function relativeXPath(xpath: string): string {
+  const expr = xpath.trim();
+  if (expr.startsWith(".")) return expr;
+  if (expr.startsWith("//")) return `.${expr}`;
+  if (expr.startsWith("/")) return `.${expr}`;
+  return `./${expr}`;
+}
 
+function evaluateXPath(root: ParentNode, xpath: string): Node[] {
   const isDocument = typeof Document !== "undefined" && root instanceof Document;
   const owner = isDocument ? (root as Document) : root.ownerDocument;
   if (!owner || typeof owner.evaluate !== "function") {
     throw new RspError("unsupported", "当前运行时没有 XPath 支持", undefined);
   }
-  const xpath = selector.xpath.trim();
-  const context: Node = xpath.startsWith(".") ? root : owner;
+  const context: Node = isDocument ? (root as Document) : root;
+  const expression = isDocument ? xpath.trim() : relativeXPath(xpath);
   const result = owner.evaluate(
-    xpath,
+    expression,
     context,
     null,
     XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
     null,
   );
-  const nodes: Element[] = [];
+  const nodes: Node[] = [];
   for (let i = 0; i < result.snapshotLength; i += 1) {
     const node = result.snapshotItem(i);
-    if (node && node.nodeType === 1) nodes.push(node as Element);
+    if (node) nodes.push(node);
   }
   return nodes;
 }
 
+/**
+ * CSS / XPath 选择器 → 节点列表（含文本 / 属性节点）。
+ *
+ * 字段抽取必须走这里：Kazumi 规则常用 `//div[2]/text()`，只收元素节点会把标题丢光。
+ */
+export function selectNodes(root: ParentNode, selector: Selector): Node[] {
+  if (selector.css) {
+    return [...root.querySelectorAll(selector.css)];
+  }
+  if (!selector.xpath) return [];
+  return evaluateXPath(root, selector.xpath);
+}
+
+/** 只要元素节点（列表容器）；XPath 在元素上下文里按相对路径求值。 */
+export function selectElements(root: ParentNode, selector: Selector): Element[] {
+  return selectNodes(root, selector).filter(
+    (node): node is Element => node.nodeType === 1,
+  );
+}
+
+function nodeText(node: Node): string {
+  // 文本 / CDATA / 属性节点直接取 nodeValue；元素取 textContent。
+  if (node.nodeType === 1) return (node as Element).textContent ?? "";
+  return node.nodeValue ?? "";
+}
+
 function readHtmlField(node: Element, field: FieldExtractor, vars: RuleVars): string {
-  const target = selectElements(node, field.selector)[0];
+  const target = selectNodes(node, field.selector)[0];
   if (!target) return "";
-  let value = field.attr ? (target.getAttribute(field.attr) ?? "") : (target.textContent ?? "");
+  let value: string;
+  if (field.attr) {
+    value =
+      target.nodeType === 1
+        ? ((target as Element).getAttribute(field.attr) ?? "")
+        : "";
+  } else {
+    value = nodeText(target);
+  }
   value = value.trim();
   if (field.regex) value = applyRegex(value, field.regex) ?? "";
   if (value !== "" && field.template) value = interpolate(field.template, { ...vars, value });
   return value;
+}
+
+/** 分类 / 标签链接的 href 判据（2026-10-21）：卡片里常见的「近期更新 / 类型」链接。 */
+const TAG_LINK_RE = /(?:^|\/)(?:tags?|type|types|genre|genres|category|categories|vodtype)(?:[/\-_.?=]|$)/i;
+
+/**
+ * 规则没声明 tags 时，从卡片节点里兜底收集标签。
+ *
+ * 上游（Kazumi / Venera）的搜索卡片经常在卡片内放一条分类链接
+ * （`/vodtype/1.html`、`/tag/热血`、文字如「近期更新」），但规则只抽
+ * id / title。这里把它们收成 `tags`，筛选抽屉即可按「每个源自己的标签」分组。
+ */
+function collectHtmlRowTags(node: Element): string[] {
+  const out = new Set<string>();
+  for (const anchor of node.querySelectorAll("a[href], .tag, .tags, [class*='tag']")) {
+    const href = anchor.getAttribute("href") ?? "";
+    const classLike = anchor.tagName === "A" ? "" : (anchor.getAttribute("class") ?? "");
+    if (!TAG_LINK_RE.test(href) && !/tag/i.test(classLike)) continue;
+    const text = (anchor.textContent ?? "").trim();
+    if (!text || text.length > 16) continue;
+    out.add(text);
+    if (out.size >= 4) break;
+  }
+  return [...out];
 }
 
 /** HTML 列表（网页型来源）：列表节点内逐字段抽取。 */
@@ -224,6 +285,10 @@ export function extractHtmlRows(
       const row: Record<string, string> = {};
       for (const [key, field] of Object.entries(rule.fields)) {
         row[key] = readHtmlField(node, field, vars);
+      }
+      if (!row.tags) {
+        const tags = collectHtmlRowTags(node);
+        if (tags.length > 0) row.tags = tags.join(",");
       }
       return row;
     })
